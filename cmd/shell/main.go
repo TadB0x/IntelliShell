@@ -582,7 +582,11 @@ func generateCommandFromAI(ctx context.Context, input string, done chan bool) (s
 	if runtime.GOOS == "darwin" {
 		targetOS = "macOS"
 	} else if runtime.GOOS == "windows" {
-		targetOS = "Windows Command Prompt (cmd.exe)"
+		if _, err := exec.LookPath("powershell"); err == nil {
+			targetOS = "Windows PowerShell"
+		} else {
+			targetOS = "Windows Command Prompt (cmd.exe)"
+		}
 	} else if runtime.GOOS == "linux" {
 		targetOS = "Linux (bash/sh)"
 	}
@@ -770,7 +774,11 @@ func executeCommand(cmdStr string, forceUnsandboxed bool, rl *readline.Instance)
 		exe, _ := os.Executable()
 		cmd = exec.Command(exe, "__sandbox_exec", cmdStr)
 	} else if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", cmdStr)
+		if _, err := exec.LookPath("powershell"); err == nil {
+			cmd = exec.Command("powershell", "-Command", cmdStr)
+		} else {
+			cmd = exec.Command("cmd", "/c", cmdStr)
+		}
 	} else {
 		// Try to use bash for better compatibility with AI-generated commands, fallback to sh
 		shell := "sh"

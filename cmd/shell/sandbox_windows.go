@@ -25,7 +25,7 @@ func isSigSys(err error) bool {
 func runSandboxedChild(cmdStr string) {
 	// Windows lacks an unprivileged kernel sandbox equivalent to Seccomp/Seatbelt.
 	// As a best-practice application-layer alternative, we use static regex analysis 
-	// to intercept destructive commands in this shim process before invoking cmd.exe.
+	// to intercept destructive commands in this shim process before invoking the shell.
 	
 	destructivePatterns := []string{
 		`(?i)\bdel\b`,
@@ -43,7 +43,14 @@ func runSandboxedChild(cmdStr string) {
 		}
 	}
 
-	cmd := exec.Command("cmd", "/c", cmdStr)
+	shell := "cmd"
+	args := []string{"/c", cmdStr}
+	if _, err := exec.LookPath("powershell"); err == nil {
+		shell = "powershell"
+		args = []string{"-Command", cmdStr}
+	}
+
+	cmd := exec.Command(shell, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
