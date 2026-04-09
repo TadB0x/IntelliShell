@@ -5,7 +5,7 @@ IntelliShell is a lightweight, cross-platform AI shell assistant that allows you
 ## ✨ Features
 
 - **Natural Language to Command**: Type what you want to do in plain English, and let the AI translate it into the appropriate command for your OS.
-- **Multi-Provider Support**: Supports multiple AI providers natively, including Google (Gemini), OpenAI, Anthropic, Vertex AI, and dynamically fetches models via OpenRouter.
+- **Multi-Provider Support**: Supports multiple AI providers natively, including Google (Gemini), OpenAI, Anthropic, Vertex AI, OpenRouter, and local models via Ollama and LM Studio.
 - **Safety First**: Automatically detects potentially destructive commands (e.g., delete, format) and prompts for confirmation before execution.
 - **Blazing Fast Presets**: Common operations (like listing files or checking the current directory) bypass the AI via pre-compiled Regex aliases for instantaneous execution.
 - **Interactive Configuration**: Features a beautiful built-in terminal UI (powered by `charmbracelet/huh`) to configure your preferred AI provider, model, and API keys on the fly.
