@@ -15,8 +15,7 @@ import (
 	"sync"
 	"time"
 
-	// Assumes a `go.mod` file defines the module name (e.g., 'shell')
-	"shell/presets"
+	"github.com/morewebsoft/shell/presets"
 
 	"github.com/charmbracelet/huh"
 )
@@ -380,7 +379,7 @@ User input: %s`, runtime.GOOS, runtime.GOOS, cwd, input)
 			}
 			if err := json.Unmarshal([]byte(data), &chunk); err == nil {
 				if len(chunk.Choices) > 0 {
-					content := chunk.Choices.Delta.Content
+					content := chunk.Choices[0].Delta.Content
 					if content != "" {
 						if firstChunk {
 							stopSpinner()
