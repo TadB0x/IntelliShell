@@ -22,9 +22,10 @@ import (
 )
 
 type AppConfig struct {
-	Provider string
-	Model    string
-	APIKey   string
+	Provider    string
+	Model       string
+	APIKey      string
+	AutoExecute bool
 }
 
 // AIRegistry represents a dynamic list of providers and models
@@ -142,8 +143,15 @@ func main() {
 		command, isSafe := generateCommandFromAI(ctx, input, done)
 
 		// 2. Safety Verification
-		if !isSafe {
-			fmt.Printf("%s⚠️  Command might be unsafe. Execute? (y/n):%s ", colorYellow, colorReset)
+		if !isSafe || !config.AutoExecute {
+			msg := "Command might be unsafe."
+			if config.AutoExecute && !isSafe {
+				msg = "Command is UNSAFE."
+			} else if !config.AutoExecute {
+				msg = "Auto-execution is OFF."
+			}
+
+			fmt.Printf("%s%s Execute? (y/n):%s ", colorYellow, msg, colorReset)
 			confirm, _ := reader.ReadString('\n')
 			if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
 				fmt.Println("Execution cancelled.")
@@ -157,11 +165,52 @@ func main() {
 }
 
 func handleSettings() {
-	fmt.Println("\n--- ⚙️ Settings ---")
-	fmt.Println("1. Auto-execution: ON (Ask only on unsafe)")
-	fmt.Println("2. AI API Configuration (Not configured)")
-	fmt.Println("3. Mode: English + Native integrated")
-	fmt.Println("(Note: Settings interactive menu to be implemented)\n")
+	// Status flags for the display
+	apiStatus := "Not configured"
+	if config.APIKey != "" {
+		apiStatus = fmt.Sprintf("Configured (%s)", config.Provider)
+	}
+
+	autoExecStatus := "OFF (Always ask)"
+	if config.AutoExecute {
+		autoExecStatus = "ON (Ask only on unsafe)"
+	}
+
+	var action string
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewNote().
+				Title("⚙️ IntelliShell Settings").
+				Description(fmt.Sprintf("Current Status:\n• AI Provider: %s\n• Auto-Execution: %s", apiStatus, autoExecStatus)),
+			huh.NewSelect[string]().
+				Title("Manage Preferences").
+				Options(
+					huh.NewOption("Toggle Auto-Execution", "toggle_exec"),
+					huh.NewOption("Configure AI Model", "config_model"),
+					huh.NewOption("Back to Shell", "back"),
+				).
+				Value(&action),
+		),
+	).Run()
+
+	if err != nil {
+		return
+	}
+
+	switch action {
+	case "toggle_exec":
+		config.AutoExecute = !config.AutoExecute
+		saveConfig()
+		status := "OFF"
+		if config.AutoExecute {
+			status = "ON"
+		}
+		fmt.Printf("\n%sAuto-execution is now %s.%s\n", colorGreen, status, colorReset)
+	case "config_model":
+		handleModelConfig(context.Background())
+	case "back":
+		return
+	}
 }
 
 func fetchAIRegistry() AIRegistry {
