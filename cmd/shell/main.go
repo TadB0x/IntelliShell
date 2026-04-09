@@ -76,7 +76,7 @@ func main() {
 	for {
 		// The native terminal prompt
 		cwd, _ := os.Getwd()
-		fmt.Printf("%sai-shell %s>%s ", colorCyan, cwd, colorReset)
+		fmt.Printf("%s[AI] %s>%s ", colorCyan, cwd, colorReset)
 
 		input, err := reader.ReadString('\n')
 		if err != nil {
