@@ -103,6 +103,7 @@ func main() {
 				case <-done:
 					// Clear the spinner line completely
 					fmt.Print("\r\033[K")
+					done <- true
 					return
 				default:
 					fmt.Printf("\r\033[35m%s Translating...\033[0m", chars[i])
@@ -290,6 +291,7 @@ func generateCommandFromAI(ctx context.Context, input string, done chan bool) (s
 	stopSpinner := func() {
 		stopSpinnerOnce.Do(func() {
 			done <- true
+			<-done // Wait for the spinner to finish erasing
 		})
 	}
 	defer stopSpinner() // Ensure spinner channel is always resolved
@@ -424,14 +426,34 @@ User input: %s`, runtime.GOOS, runtime.GOOS, cwd, input)
 
 	fullResponse = strings.TrimSpace(fullResponse)
 	isSafe := true
-	if strings.HasPrefix(fullResponse, "UNSAFE: ") {
+	if strings.Contains(fullResponse, "UNSAFE:") {
 		isSafe = false
-		fullResponse = strings.TrimPrefix(fullResponse, "UNSAFE: ")
-	} else if strings.HasPrefix(fullResponse, "UNSAFE:") {
-		isSafe = false
-		fullResponse = strings.TrimPrefix(fullResponse, "UNSAFE:")
 	}
 
+	if strings.Contains(fullResponse, "```") {
+		firstIdx := strings.Index(fullResponse, "```")
+		lastIdx := strings.LastIndex(fullResponse, "```")
+		if firstIdx != -1 && lastIdx != -1 && firstIdx+3 <= lastIdx {
+			block := fullResponse[firstIdx+3 : lastIdx]
+			block = strings.TrimSpace(block)
+			lines := strings.SplitN(block, "\n", 2)
+			if len(lines) == 2 {
+				firstLine := strings.TrimSpace(strings.ToLower(lines))
+				if firstLine == "bash" || firstLine == "sh" || firstLine == "shell" || firstLine == "cmd" || firstLine == "powershell" {
+					block = strings.TrimSpace(lines)
+				}
+			} else if len(lines) == 1 {
+				firstLine := strings.TrimSpace(strings.ToLower(lines))
+				if firstLine == "bash" || firstLine == "sh" || firstLine == "shell" || firstLine == "cmd" || firstLine == "powershell" {
+					block = ""
+				}
+			}
+			fullResponse = block
+		}
+	}
+
+	fullResponse = strings.TrimPrefix(fullResponse, "UNSAFE: ")
+	fullResponse = strings.TrimPrefix(fullResponse, "UNSAFE:")
 	fullResponse = strings.TrimPrefix(fullResponse, "```bash")
 	fullResponse = strings.TrimPrefix(fullResponse, "```sh")
 	fullResponse = strings.TrimPrefix(fullResponse, "```")
