@@ -18,6 +18,7 @@ import (
 
 	"github.com/TadB0x/IntelliShell/presets"
 
+	"github.com/chzyer/readline"
 	"github.com/charmbracelet/huh"
 )
 
@@ -69,23 +70,41 @@ func init() {
 
 func main() {
 	loadConfig()
-	reader := bufio.NewReader(os.Stdin)
 	ctx := context.Background()
+
+	// Configure autocomplete for / commands
+	completer := readline.NewPrefixCompleter(
+		readline.PcItem("/settings"),
+		readline.PcItem("/model"),
+		readline.PcItem("/version"),
+		readline.PcItem("/help"),
+		readline.PcItem("exit"),
+	)
+
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          fmt.Sprintf("%s[AI] %s>%s ", colorCyan, "[PWD]", colorReset),
+		AutoComplete:    completer,
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error initializing readline:", err)
+		return
+	}
+	defer rl.Close()
 
 	fmt.Println("Welcome to IntelliShell. Type natural language, native commands, '/model' for AI setup, '/settings' for preferences, or 'exit' to quit.")
 
 	for {
-		// The native terminal prompt
 		cwd, _ := os.Getwd()
-		fmt.Printf("%s[AI] %s>%s ", colorCyan, cwd, colorReset)
+		rl.SetPrompt(fmt.Sprintf("%s[AI] %s>%s ", colorCyan, cwd, colorReset))
 
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error reading input:", err)
+		line, err := rl.Readline()
+		if err != nil { // Handle Ctrl+C or Ctrl+D
 			break
 		}
 
-		input = strings.TrimSpace(input)
+		input := strings.TrimSpace(line)
 		if input == "" {
 			continue
 		}
@@ -152,8 +171,13 @@ func main() {
 			}
 
 			fmt.Printf("%s%s Execute? (y/n):%s ", colorYellow, msg, colorReset)
-			confirm, _ := reader.ReadString('\n')
-			if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+			
+			// We need a clean read here, bypassing readline temporary to avoid prompt collision
+			confirmLine, err := rl.ReadlineWithDefault("")
+			if err != nil {
+				continue
+			}
+			if strings.ToLower(strings.TrimSpace(confirmLine)) != "y" {
 				fmt.Println("Execution cancelled.")
 				continue
 			}
@@ -165,51 +189,95 @@ func main() {
 }
 
 func handleSettings() {
-	// Status flags for the display
-	apiStatus := "Not configured"
-	if config.APIKey != "" {
-		apiStatus = fmt.Sprintf("Configured (%s)", config.Provider)
-	}
-
-	autoExecStatus := "OFF (Always ask)"
-	if config.AutoExecute {
-		autoExecStatus = "ON (Ask only on unsafe)"
-	}
-
-	var action string
-	err := huh.NewForm(
-		huh.NewGroup(
-			huh.NewNote().
-				Title("⚙️ IntelliShell Settings").
-				Description(fmt.Sprintf("Current Status:\n• AI Provider: %s\n• Auto-Execution: %s", apiStatus, autoExecStatus)),
-			huh.NewSelect[string]().
-				Title("Manage Preferences").
-				Options(
-					huh.NewOption("Toggle Auto-Execution", "toggle_exec"),
-					huh.NewOption("Configure AI Model", "config_model"),
-					huh.NewOption("Back to Shell", "back"),
-				).
-				Value(&action),
-		),
-	).Run()
-
-	if err != nil {
-		return
-	}
-
-	switch action {
-	case "toggle_exec":
-		config.AutoExecute = !config.AutoExecute
-		saveConfig()
-		status := "OFF"
-		if config.AutoExecute {
-			status = "ON"
+	for {
+		// Prepare status indicators
+		apiStatus := "❌ Not Configured"
+		if config.APIKey != "" {
+			apiStatus = fmt.Sprintf("✅ Configured (%s)", config.Provider)
 		}
-		fmt.Printf("\n%sAuto-execution is now %s.%s\n", colorGreen, status, colorReset)
-	case "config_model":
-		handleModelConfig(context.Background())
-	case "back":
-		return
+
+		autoExecStatus := "🔴 OFF (Always Ask)"
+		if config.AutoExecute {
+			autoExecStatus = "🟢 ON (Ask only on unsafe)"
+		}
+
+		var category string
+		err := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("⚙️ IntelliShell Settings").
+					Description("Choose a category to modify:").
+					Options(
+						huh.NewOption("🤖 AI Configuration (Current: "+apiStatus+")", "ai"),
+						huh.NewOption("⚡ Execution Settings (Current: "+autoExecStatus+")", "exec"),
+						huh.NewOption("🔙 Back to Shell", "exit"),
+					).
+					Value(&category),
+			),
+		).Run()
+
+		if err != nil || category == "exit" || category == "" {
+			return
+		}
+
+		switch category {
+		case "ai":
+			var aiAction string
+			err := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("🤖 AI Configuration").
+						Options(
+							huh.NewOption("🔄 Update Model / API Key", "update"),
+							huh.NewOption("👀 Show Current Config", "show"),
+							huh.NewOption("🔙 Back", "back"),
+						).
+						Value(&aiAction),
+				),
+			).Run()
+
+			if err == nil && aiAction == "update" {
+				handleModelConfig(context.Background())
+			} else if err == nil && aiAction == "show" {
+				keyPreview := "Not set"
+				if len(config.APIKey) > 8 {
+					keyPreview = config.APIKey[:4] + "..." + config.APIKey[len(config.APIKey)-4:]
+				}
+				fmt.Printf("\n%sCurrent AI Config:%s\n• Provider: %s\n• Model: %s\n• API Key: %s\n\n", colorCyan, colorReset, config.Provider, config.Model, keyPreview)
+				fmt.Print("Press Enter to continue...")
+				bufio.NewReader(os.Stdin).ReadString('\n')
+			}
+
+		case "exec":
+			var execAction string
+			toggleLabel := "Enable Auto-Execution"
+			if config.AutoExecute {
+				toggleLabel = "Disable Auto-Execution"
+			}
+
+			err := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("⚡ Execution Settings").
+						Options(
+							huh.NewOption(toggleLabel, "toggle"),
+							huh.NewOption("🔙 Back", "back"),
+						).
+						Value(&execAction),
+				),
+			).Run()
+
+			if err == nil && execAction == "toggle" {
+				config.AutoExecute = !config.AutoExecute
+				saveConfig()
+				status := "OFF"
+				if config.AutoExecute {
+					status = "ON"
+				}
+				fmt.Printf("\n%sAuto-execution is now %s.%s\n", colorGreen, status, colorReset)
+				time.Sleep(1 * time.Second)
+			}
+		}
 	}
 }
 
