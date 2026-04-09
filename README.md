@@ -40,6 +40,7 @@ Upon launching, IntelliShell will default to Google's `gemini-1.5-flash` model, 
 - **`<native command>`**: Standard terminal commands work as usual (e.g., `ls`, `cd`, `git status`).
 - **`/model`**: Opens the interactive AI provider and model configuration setup.
 - **`/settings`**: Opens the preferences menu (Auto-execution, Modes, etc.).
+- **`/version`**: Displays the current version of IntelliShell.
 - **`exit`**: Quits IntelliShell.
 
 ## 🛡️ Safety Mechanism

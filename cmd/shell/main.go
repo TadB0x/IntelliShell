@@ -105,6 +105,12 @@ func main() {
 			continue
 		}
 
+		// Handle the version command
+		if strings.HasPrefix(input, "/version") {
+			fmt.Printf("%sIntelliShell version 0.1%s\n", colorCyan, colorReset)
+			continue
+		}
+
 		// Check for a preset command first for performance and to bypass AI
 		if command, found := presets.CheckForPreset(input); found {
 			fmt.Printf("%s-> %s%s\n", colorGreen, command, colorReset) // Show the resolved command
