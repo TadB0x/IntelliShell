@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/TadB0x/IntelliShell/presets"
 
 	"github.com/chzyer/readline"
@@ -173,7 +175,7 @@ func main() {
 		if command, found := presets.CheckForPreset(input); found {
 			fmt.Printf("%s-> %s%s\n", colorGreen, command, colorReset) // Show the resolved command
 			// Presets are considered safe and are executed directly
-			executeCommand(command)
+			executeCommand(ctx, command, input)
 			continue // Skip AI and go to next prompt
 		}
 
@@ -222,7 +224,7 @@ func main() {
 		}
 
 		// 3. Execution
-		executeCommand(command)
+		executeCommand(ctx, command, input)
 	}
 }
 
@@ -711,7 +713,117 @@ User input: %s`, runtime.GOOS, runtime.GOOS, cwd, input)
 	return fullResponse, isSafe
 }
 
-func executeCommand(cmdStr string) {
+func searchForSolution(ctx context.Context, originalInput, failedCommand, errorMsg string) (string, bool) {
+	fmt.Printf("\n%s🔍 Command failed. Searching for a solution...%s\n", colorCyan, colorReset)
+
+	// Simple DuckDuckGo search query
+	query := fmt.Sprintf("how to %s on %s fix error %s", originalInput, runtime.GOOS, errorMsg)
+	searchURL := "https://duckduckgo.com/html/?q=" + url.QueryEscape(query)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, _ := http.NewRequest("GET", searchURL, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", false
+	}
+
+	var searchResults []string
+	doc.Find(".result__snippet").Each(func(i int, s *goquery.Selection) {
+		if i < 3 { // Get top 3 snippets
+			searchResults = append(searchResults, s.Text())
+		}
+	})
+
+	if len(searchResults) == 0 {
+		return "", false
+	}
+
+	contextInfo := strings.Join(searchResults, "\n")
+	prompt := fmt.Sprintf(`The previous command failed.
+Original Intent: %s
+Failed Command: %s
+Error Message: %s
+
+Web Search Context:
+%s
+
+Based on this, provide a corrected, working terminal command for %s.
+Return ONLY the raw command. Do not wrap it in quotes, markdown, or JSON.
+If it's dangerous, prefix with "UNSAFE: ".`, originalInput, failedCommand, errorMsg, contextInfo, runtime.GOOS)
+
+	// Call AI with this new prompt
+	correctedCmd, isSafe := callAIForCorrection(ctx, prompt)
+	return correctedCmd, isSafe
+}
+
+func callAIForCorrection(ctx context.Context, prompt string) (string, bool) {
+	var baseURL string
+	modelID := config.Model
+
+	switch config.Provider {
+	case "google":
+		baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+	case "openai":
+		baseURL = "https://api.openai.com/v1/chat/completions"
+	case "groq":
+		baseURL = "https://api.groq.com/openai/v1/chat/completions"
+	default:
+		baseURL = "https://openrouter.ai/api/v1/chat/completions"
+		if !strings.Contains(modelID, "/") && config.Provider != "" {
+			modelID = config.Provider + "/" + config.Model
+		}
+	}
+
+	reqBody := map[string]interface{}{
+		"model": modelID,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"temperature": 0.1,
+	}
+
+	jsonData, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return "", true
+	}
+	defer resp.Body.Close()
+
+	var aiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil || len(aiResp.Choices) == 0 {
+		return "", true
+	}
+
+	content := strings.TrimSpace(aiResp.Choices[0].Message.Content)
+	isSafe := true
+	if strings.HasPrefix(content, "UNSAFE:") {
+		isSafe = false
+		content = strings.TrimSpace(strings.TrimPrefix(content, "UNSAFE:"))
+	}
+
+	return content, isSafe
+}
+
+func executeCommand(ctx context.Context, cmdStr, originalInput string) {
 	if cmdStr == "" {
 		return
 	}
@@ -752,13 +864,38 @@ func executeCommand(cmdStr string) {
 	}
 	
 	// Bind standard streams so the output behaves exactly like a native terminal
+	var stderr bytes.Buffer
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	cmd.Stdin = os.Stdin
 
 	err := cmd.Run()
 	if err != nil {
-		fmt.Printf("%sCommand failed:%s %v\n", colorRed, colorReset, err)
+		errorMsg := stderr.String()
+		if errorMsg == "" {
+			errorMsg = err.Error()
+		}
+
+		// FALLBACK SYSTEM: Search for a solution if command failed
+		correctedCmd, isSafe := searchForSolution(ctx, originalInput, cmdStr, errorMsg)
+		if correctedCmd != "" && correctedCmd != cmdStr {
+			fmt.Printf("\n%s💡 Suggested Fix: %s%s\n", colorGreen, correctedCmd, colorReset)
+			if !isSafe {
+				fmt.Printf("%s⚠️  Corrected command might be unsafe. Execute? (y/n):%s ", colorYellow, colorReset)
+			} else {
+				fmt.Printf("Execute this fix? (y/n): ")
+			}
+
+			// We need a way to read from stdin properly here.
+			// Since we're in the middle of potential command chains, we'll use a simple reader.
+			reader := bufio.NewReader(os.Stdin)
+			confirm, _ := reader.ReadString('\n')
+			if strings.ToLower(strings.TrimSpace(confirm)) == "y" {
+				executeCommand(ctx, correctedCmd, originalInput) // Recurse with new command
+			}
+		} else {
+			fmt.Printf("%sCommand failed:%s %v\n", colorRed, colorReset, err)
+		}
 	}
 }
 func getConfigPath() string {
