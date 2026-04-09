@@ -1,4 +1,4 @@
-module github.com/morewebsoft/shell
+module github.com/TadB0x/IntelliShell
 
 go 1.26.2
 

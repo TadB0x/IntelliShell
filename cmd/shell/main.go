@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/morewebsoft/shell/presets"
+	"github.com/tadB0x/IntelliShell/presets"
 
 	"github.com/charmbracelet/huh"
 )
@@ -49,7 +49,7 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 	ctx := context.Background()
 
-	fmt.Println("Welcome to AI Shell. Type natural language, native commands, '/model' for AI setup, '/settings' for preferences, or 'exit' to quit.")
+	fmt.Println("Welcome to IntelliShell. Type natural language, native commands, '/model' for AI setup, '/settings' for preferences, or 'exit' to quit.")
 
 	for {
 		// The native terminal prompt
@@ -343,8 +343,8 @@ User input: %s`, runtime.GOOS, runtime.GOOS, cwd, input)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+config.APIKey)
 	if baseURL == "https://openrouter.ai/api/v1/chat/completions" {
-		req.Header.Set("HTTP-Referer", "https://github.com/shell")
-		req.Header.Set("X-Title", "AI Shell")
+		req.Header.Set("HTTP-Referer", "https://github.com/tadB0x/IntelliShell")
+		req.Header.Set("X-Title", "IntelliShell")
 	}
 
 	client := &http.Client{}
