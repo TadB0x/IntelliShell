@@ -52,6 +52,7 @@ var (
 	colorYellow = "\033[33m"
 	colorRed    = "\033[31m"
 	colorPurple = "\033[35m"
+	colorGrey   = "\033[90m"
 	colorReset  = "\033[0m"
 	clearLine   = "\r\033[K"
 )
@@ -63,9 +64,39 @@ func init() {
 		colorYellow = ""
 		colorRed = ""
 		colorPurple = ""
+		colorGrey = ""
 		colorReset = ""
 		clearLine = "\r" + strings.Repeat(" ", 80) + "\r"
 	}
+}
+
+type commandPainter struct{}
+
+func (p *commandPainter) Paint(line []rune, pos int) []rune {
+	s := string(line)
+	if !strings.HasPrefix(s, "/") || strings.Contains(s, " ") {
+		return line
+	}
+
+	cmds := []string{"/settings", "/model", "/version", "/help"}
+	var matches []string
+	for _, cmd := range cmds {
+		if strings.HasPrefix(cmd, s) {
+			matches = append(matches, cmd)
+		}
+	}
+
+	if len(matches) > 0 {
+		suggestion := strings.Join(matches, "  ")
+		ghost := fmt.Sprintf("      %s%s%s", colorGrey, suggestion, colorReset)
+		
+		res := make([]rune, len(line))
+		copy(res, line)
+		res = append(res, []rune(ghost)...)
+		return res
+	}
+
+	return line
 }
 
 func main() {
@@ -86,6 +117,7 @@ func main() {
 		AutoComplete:    completer,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
+		Painter:         &commandPainter{},
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error initializing readline:", err)
