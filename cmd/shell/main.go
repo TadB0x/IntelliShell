@@ -10,12 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/tadB0x/IntelliShell/presets"
+	"github.com/TadB0x/IntelliShell/presets"
 
 	"github.com/charmbracelet/huh"
 )
@@ -46,6 +47,7 @@ var (
 )
 
 func main() {
+	loadConfig()
 	reader := bufio.NewReader(os.Stdin)
 	ctx := context.Background()
 
@@ -213,6 +215,7 @@ func handleModelConfig(ctx context.Context) {
 	}
 
 	config.Provider, config.Model, config.APIKey = p, m, k
+	saveConfig()
 
 	fmt.Printf("\n\033[32mSuccessfully updated AI configuration to %s (%s).\033[0m\n", config.Provider, config.Model)
 }
@@ -224,6 +227,7 @@ func fetchAIRegistry() AIRegistry {
 			{ID: "google", Name: "Google", Models: []string{"gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"}},
 			{ID: "openai", Name: "OpenAI", Models: []string{"gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo", "gpt-4o-mini"}},
 			{ID: "anthropic", Name: "Anthropic", Models: []string{"claude-3-5-sonnet-20240620", "claude-3-opus-20240229"}},
+			{ID: "groq", Name: "Groq", Models: []string{"llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "gemma-7b-it"}},
 			{ID: "vertex", Name: "Vertex AI", Models: []string{"gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"}},
 		},
 	}
@@ -291,7 +295,9 @@ func generateCommandFromAI(ctx context.Context, input string, done chan bool) (s
 	defer stopSpinner() // Ensure spinner channel is always resolved
 
 	if config.APIKey == "" {
-		return "echo \033[31mError: API key is not configured. Please use '/model' to set it.\033[0m", true
+		stopSpinner()
+		fmt.Println("\r\033[31mError: API key is not configured. Please use '/model' to set it.\033[0m")
+		return "", true
 	}
 
 	var baseURL string
@@ -302,6 +308,8 @@ func generateCommandFromAI(ctx context.Context, input string, done chan bool) (s
 		baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 	case "openai":
 		baseURL = "https://api.openai.com/v1/chat/completions"
+	case "groq":
+		baseURL = "https://api.groq.com/openai/v1/chat/completions"
 	case "openrouter":
 		baseURL = "https://openrouter.ai/api/v1/chat/completions"
 	default:
@@ -332,12 +340,16 @@ User input: %s`, runtime.GOOS, runtime.GOOS, cwd, input)
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Sprintf("echo \033[31mError encoding JSON:\033[0m %v", err), true
+		stopSpinner()
+		fmt.Printf("\r\033[31mError encoding JSON:\033[0m %v\n", err)
+		return "", true
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(jsonData))
 	if err != nil {
-		return fmt.Sprintf("echo \033[31mError creating request:\033[0m %v", err), true
+		stopSpinner()
+		fmt.Printf("\r\033[31mError creating request:\033[0m %v\n", err)
+		return "", true
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -350,13 +362,17 @@ User input: %s`, runtime.GOOS, runtime.GOOS, cwd, input)
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Sprintf("echo \033[31mAPI Error:\033[0m %v", err), true
+		stopSpinner()
+		fmt.Printf("\r\033[31mAPI Error:\033[0m %v\n", err)
+		return "", true
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		stopSpinner()
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Sprintf("echo \033[31mAPI Error (%d):\033[0m %s", resp.StatusCode, string(body)), true
+		fmt.Printf("\r\033[31mAPI Error (%d):\033[0m %s\n", resp.StatusCode, string(body))
+		return "", true
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -395,7 +411,9 @@ User input: %s`, runtime.GOOS, runtime.GOOS, cwd, input)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Sprintf("echo \033[31mStream Error:\033[0m %v", err), true
+		stopSpinner()
+		fmt.Printf("\r\033[31mStream Error:\033[0m %v\n", err)
+		return "", true
 	}
 
 	if firstChunk {
@@ -455,7 +473,12 @@ func executeCommand(cmdStr string) {
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd", "/c", cmdStr)
 	} else {
-		cmd = exec.Command("sh", "-c", cmdStr)
+		// Try to use bash for better compatibility with AI-generated commands, fallback to sh
+		shell := "sh"
+		if _, err := exec.LookPath("bash"); err == nil {
+			shell = "bash"
+		}
+		cmd = exec.Command(shell, "-c", cmdStr)
 	}
 	
 	// Bind standard streams so the output behaves exactly like a native terminal
@@ -466,5 +489,31 @@ func executeCommand(cmdStr string) {
 	err := cmd.Run()
 	if err != nil {
 		fmt.Printf("\033[31mCommand failed:\033[0m %v\n", err)
+	}
+}
+func getConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "config.json"
+	}
+	configDir := filepath.Join(home, ".intellishell")
+	_ = os.MkdirAll(configDir, 0755)
+	return filepath.Join(configDir, "config.json")
+}
+
+func loadConfig() {
+	path := getConfigPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	_ = json.Unmarshal(data, &config)
+}
+
+func saveConfig() {
+	path := getConfigPath()
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(path, data, 0644)
 	}
 }
