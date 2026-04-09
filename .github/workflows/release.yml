@@ -20,6 +20,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: stable
+      - name: Install Dependencies (Linux Sandbox)
+        run: sudo apt-get update && sudo apt-get install -y libseccomp-dev
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v5
         with:

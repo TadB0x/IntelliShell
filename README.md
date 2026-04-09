@@ -15,6 +15,7 @@ IntelliShell is a lightweight, cross-platform AI shell assistant that allows you
 
 ### Prerequisites
 - Go (stable version recommended)
+- **Linux users only**: `libseccomp-dev` is required to compile the native kernel-level sandbox (e.g., `sudo apt install libseccomp-dev`).
 
 ### Installation
 Clone the repository and build the project:
