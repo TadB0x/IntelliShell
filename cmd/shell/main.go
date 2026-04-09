@@ -578,6 +578,15 @@ func generateCommandFromAI(ctx context.Context, input string, done chan bool) (s
 		modelID = config.Provider + "/" + config.Model
 	}
 
+	targetOS := runtime.GOOS
+	if runtime.GOOS == "darwin" {
+		targetOS = "macOS"
+	} else if runtime.GOOS == "windows" {
+		targetOS = "Windows Command Prompt (cmd.exe)"
+	} else if runtime.GOOS == "linux" {
+		targetOS = "Linux (bash/sh)"
+	}
+
 	cwd, _ := os.Getwd()
 	prompt := fmt.Sprintf(`You are a lightweight AI shell assistant for %s. 
 Translate the user's natural language into a valid %s terminal command.
@@ -587,7 +596,7 @@ Return ONLY the raw command. Do not wrap it in quotes, markdown, or JSON.
 If the command is destructive or dangerous (e.g., delete, format, rmdir), prefix it EXACTLY with "UNSAFE: ".
 Otherwise, just output the command directly.
 
-User input: %s`, runtime.GOOS, runtime.GOOS, cwd, input)
+User input: %s`, targetOS, targetOS, cwd, input)
 
 	reqBody := map[string]interface{}{
 		"model": modelID,
