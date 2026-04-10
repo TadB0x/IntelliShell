@@ -189,6 +189,15 @@ func main() {
 			continue // Skip AI and go to next prompt
 		}
 
+		// Check for cross-platform command translations
+		if command, found := presets.CheckForCrossPlatform(input); found {
+			if command != input {
+				fmt.Printf("%s-> %s (cross-platform)%s\n", colorGreen, command, colorReset)
+			}
+			executeCommand(command, true, rl)
+			continue
+		}
+
 		// Show a premium loading spinner while waiting for the AI
 		done := make(chan bool)
 		go func() {
