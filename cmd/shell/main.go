@@ -27,6 +27,10 @@ type AppConfig struct {
 	Model       string
 	APIKey      string
 	AutoExecute bool
+	AIMemory    string
+	EnableHistory          bool
+	EnableSessionMemory    bool
+	EnablePersistentMemory bool
 }
 
 // AIRegistry represents a dynamic list of providers and models
@@ -40,11 +44,24 @@ type ProviderConfig struct {
 	Models []string `json:"models"`
 }
 
+// HistoryEntry stores a single interaction for AI context memory.
+type HistoryEntry struct {
+	UserInput string
+	Command   string
+}
+
+var sessionHistory []HistoryEntry
+const maxHistorySize = 5
+var sessionAIMemory string
+
 var (
 	config   = AppConfig{
-		Provider: "google",
-		Model:    "gemini-1.5-flash",
-		APIKey:   os.Getenv("GEMINI_API_KEY"),
+		Provider:               "google",
+		Model:                  "gemini-1.5-flash",
+		APIKey:                 os.Getenv("GEMINI_API_KEY"),
+		EnableHistory:          true,
+		EnableSessionMemory:    true,
+		EnablePersistentMemory: true,
 	}
 
 	colorCyan   = "\033[36m"
@@ -103,6 +120,13 @@ func (p *commandPainter) Paint(line []rune, pos int) []rune {
 	}
 
 	return line
+}
+
+func addToHistory(input, command string) {
+	sessionHistory = append(sessionHistory, HistoryEntry{UserInput: input, Command: command})
+	if len(sessionHistory) > maxHistorySize {
+		sessionHistory = sessionHistory[1:] // Keep only the last N items
+	}
 }
 
 func main() {
@@ -186,6 +210,7 @@ func main() {
 			fmt.Printf("%s-> %s%s\n", colorGreen, command, colorReset) // Show the resolved command
 			// Presets are considered safe and are executed directly
 			executeCommand(command, true, rl)
+			addToHistory(input, command)
 			continue // Skip AI and go to next prompt
 		}
 
@@ -195,6 +220,7 @@ func main() {
 				fmt.Printf("%s-> %s (cross-platform)%s\n", colorGreen, command, colorReset)
 			}
 			executeCommand(command, true, rl)
+			addToHistory(input, command)
 			continue
 		}
 
@@ -202,6 +228,7 @@ func main() {
 		if isNativeCommand(input) {
 			// Ensure native commands are still evaluated by the sandbox by passing false to forceUnsandboxed
 			executeCommand(input, false, rl)
+			addToHistory(input, input)
 			continue
 		}
 
@@ -252,6 +279,7 @@ func main() {
 
 		// 3. Execution
 		executeCommand(command, needsExplicitConfirm, rl)
+		addToHistory(input, command)
 	}
 }
 
@@ -276,6 +304,7 @@ func handleSetup() {
 					Options(
 						huh.NewOption("AI Configuration ("+apiStatus+")", "ai"),
 						huh.NewOption("Execution ("+autoExecStatus+")", "exec"),
+						huh.NewOption("Context & Memory", "context"),
 						huh.NewOption("Back to Shell", "exit"),
 					).
 					Value(&category),
@@ -345,6 +374,35 @@ func handleSetup() {
 					status = "ON"
 				}
 				fmt.Printf("\n%sAuto-execution is now %s.%s\n", colorGreen, status, colorReset)
+				time.Sleep(1 * time.Second)
+			}
+
+		case "context":
+			var contextActions []string
+			if config.EnableHistory { contextActions = append(contextActions, "history") }
+			if config.EnableSessionMemory { contextActions = append(contextActions, "session") }
+			if config.EnablePersistentMemory { contextActions = append(contextActions, "persistent") }
+
+			err := huh.NewForm(
+				huh.NewGroup(
+					huh.NewMultiSelect[string]().
+						Title("Context & Memory Settings").
+						Description("Select which AI memory features to enable (Space to toggle):").
+						Options(
+							huh.NewOption("Command History Context", "history"),
+							huh.NewOption("AI Session Memory", "session"),
+							huh.NewOption("AI Persistent Memory", "persistent"),
+						).
+						Value(&contextActions),
+				),
+			).Run()
+
+			if err == nil {
+				config.EnableHistory = contains(contextActions, "history")
+				config.EnableSessionMemory = contains(contextActions, "session")
+				config.EnablePersistentMemory = contains(contextActions, "persistent")
+				saveConfig()
+				fmt.Printf("\n%sContext settings updated.%s\n", colorGreen, colorReset)
 				time.Sleep(1 * time.Second)
 			}
 		}
@@ -608,15 +666,42 @@ func generateCommandFromAI(ctx context.Context, input string, done chan bool) (s
 	}
 
 	cwd, _ := os.Getwd()
+
+	var historyContext string
+	if config.EnableHistory && len(sessionHistory) > 0 {
+		historyContext = "\n\nRecent command history (for context):\n"
+		for i, h := range sessionHistory {
+			historyContext += fmt.Sprintf("[%d] User: %q -> Executed: %q\n", i+1, h.UserInput, h.Command)
+		}
+	}
+
+	var persistentMemoryContext string
+	if config.EnablePersistentMemory && config.AIMemory != "" {
+		persistentMemoryContext = fmt.Sprintf("\n\nPersistent Memory (maintained by you):\n%s\n", config.AIMemory)
+	}
+
+	var sessionMemoryContext string
+	if config.EnableSessionMemory && sessionAIMemory != "" {
+		sessionMemoryContext = fmt.Sprintf("\n\nSession Memory (current task context):\n%s\n", sessionAIMemory)
+	}
+
+	instructions := `If the command is destructive or dangerous (e.g., delete, format, rmdir), prefix it EXACTLY with "UNSAFE: ".`
+	if config.EnablePersistentMemory {
+		instructions += "\nTo update your persistent memory, append a shell comment: \"# MEMORY: <new memory>\". This overwrites previous memory."
+	}
+	if config.EnableSessionMemory {
+		instructions += "\nTo update your session memory, append a shell comment: \"# SESSION: <new session note>\". This overwrites previous session memory."
+	}
+
 	prompt := fmt.Sprintf(`You are a lightweight AI shell assistant for %s. 
 Translate the user's natural language into a valid %s terminal command.
-The current working directory is: %s
+The current working directory is: %s%s%s%s
 If the input is already a valid command, return it as is.
 Return ONLY the raw command. Do not wrap it in quotes, markdown, or JSON.
-If the command is destructive or dangerous (e.g., delete, format, rmdir), prefix it EXACTLY with "UNSAFE: ".
+%s
 Otherwise, just output the command directly.
 
-User input: %s`, targetOS, targetOS, cwd, input)
+User input: %s`, targetOS, targetOS, cwd, historyContext, persistentMemoryContext, sessionMemoryContext, instructions, input)
 
 	reqBody := map[string]interface{}{
 		"model": modelID,
@@ -748,6 +833,31 @@ User input: %s`, targetOS, targetOS, cwd, input)
 	fullResponse = strings.TrimPrefix(fullResponse, "```")
 	fullResponse = strings.TrimSuffix(fullResponse, "```")
 	fullResponse = strings.TrimSpace(fullResponse)
+
+	// Extract MEMORY and SESSION updates iteratively if the AI included them
+	for {
+		memIdx := strings.LastIndex(fullResponse, "# MEMORY:")
+		sessIdx := strings.LastIndex(fullResponse, "# SESSION:")
+
+		if memIdx == -1 && sessIdx == -1 {
+			break
+		}
+
+		if memIdx > sessIdx {
+			newMemory := strings.TrimSpace(fullResponse[memIdx+len("# MEMORY:"):])
+			if newMemory != "" && config.EnablePersistentMemory {
+				config.AIMemory = newMemory
+				saveConfig()
+			}
+			fullResponse = strings.TrimSpace(fullResponse[:memIdx])
+		} else {
+			newSession := strings.TrimSpace(fullResponse[sessIdx+len("# SESSION:"):])
+			if newSession != "" && config.EnableSessionMemory {
+				sessionAIMemory = newSession
+			}
+			fullResponse = strings.TrimSpace(fullResponse[:sessIdx])
+		}
+	}
 
 	return fullResponse, isSafe
 }
