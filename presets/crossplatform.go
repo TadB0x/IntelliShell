@@ -20,19 +20,9 @@ func init() {
 	// Add cross-platform command mappings below. Use regex capture groups for arguments.
 	crossPlatformCommands = []CrossPlatformCommand{
 		{
-			// Example: Unix 'clear' to Windows 'cls'
+			// Example: Clear screen across platforms
 			Patterns: []*regexp.Regexp{
 				regexp.MustCompile(`(?i)^clear$`),
-			},
-			Translations: map[string]string{
-				"windows": "cls",
-				"linux":   "clear",
-				"darwin":  "clear",
-			},
-		},
-		{
-			// Example: Windows 'cls' to Unix 'clear'
-			Patterns: []*regexp.Regexp{
 				regexp.MustCompile(`(?i)^cls$`),
 			},
 			Translations: map[string]string{
@@ -46,6 +36,7 @@ func init() {
 			// Captures the target path in $1
 			Patterns: []*regexp.Regexp{
 				regexp.MustCompile(`(?i)^rm\s+-rf\s+(.+)$`),
+				regexp.MustCompile(`(?i)^rmdir\s+/s\s+/q\s+(.+)$`),
 			},
 			Translations: map[string]string{
 				"windows": "rmdir /s /q $1", // Simple mapping for Windows CMD
