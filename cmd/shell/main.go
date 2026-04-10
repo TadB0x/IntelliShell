@@ -1185,33 +1185,201 @@ func runCaptureStderr(cmdStr string, forceUnsandboxed bool) (error, string) {
 	return err, strings.TrimSpace(stderrBuf.String())
 }
 
-// searchDuckDuckGo queries DuckDuckGo (no API key) and returns up to 4 result snippets.
+// searchDuckDuckGo is kept as a best-effort attempt; DDG blocks scrapers
+// heavily so results may be empty — use gatherContext instead.
 func searchDuckDuckGo(query string) []string {
 	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := &http.Client{Timeout: 6 * time.Second}
 	req, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
 		return nil
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
 		return nil
 	}
 	defer resp.Body.Close()
-
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return nil
 	}
 	var snippets []string
-	doc.Find(".result__snippet, .result__body").Each(func(_ int, s *goquery.Selection) {
+	doc.Find(".result__snippet, .result__body, .result-snippet").Each(func(_ int, s *goquery.Selection) {
 		text := strings.TrimSpace(s.Text())
 		if text != "" && len(snippets) < 4 {
 			snippets = append(snippets, text)
 		}
 	})
 	return snippets
+}
+
+// searchStackExchange queries Unix & Linux Stack Exchange for relevant Q&A.
+func searchStackExchange(query string) []string {
+	apiURL := "https://api.stackexchange.com/2.3/search?intitle=" +
+		url.QueryEscape(query) + "&site=unix&pagesize=5&filter=default&sort=relevance"
+	client := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return nil
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Items []struct {
+			Title       string `json:"title"`
+			IsAnswered  bool   `json:"is_answered"`
+			Score       int    `json:"score"`
+			Link        string `json:"link"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil
+	}
+	var snippets []string
+	for _, item := range result.Items {
+		if item.Score > 0 || item.IsAnswered {
+			snippets = append(snippets, item.Title)
+			if len(snippets) >= 3 {
+				break
+			}
+		}
+	}
+	return snippets
+}
+
+// getManPageSummary returns the NAME+SYNOPSIS section of the man page for cmd.
+func getManPageSummary(cmdName string) string {
+	out, err := exec.Command("man", cmdName).Output()
+	if err != nil {
+		return ""
+	}
+	// Strip terminal backspace formatting (man page overstrike)
+	text := string(out)
+	for strings.Contains(text, "\b") {
+		// Remove "char\b" sequences used for bold/underline
+		cleaned := strings.Builder{}
+		runes := []rune(text)
+		for i := 0; i < len(runes); i++ {
+			if i+2 < len(runes) && runes[i+1] == '\b' {
+				i += 2 // skip char + backspace + next char (overwrite)
+				continue
+			}
+			if runes[i] == '\b' {
+				continue
+			}
+			cleaned.WriteRune(runes[i])
+		}
+		text = cleaned.String()
+		if !strings.Contains(text, "\b") {
+			break
+		}
+	}
+	lines := strings.Split(text, "\n")
+	var keep []string
+	for _, l := range lines {
+		if len(keep) >= 12 {
+			break
+		}
+		keep = append(keep, l)
+	}
+	return strings.Join(keep, "\n")
+}
+
+// aptCacheSearch returns apt package matches for a package name.
+func aptCacheSearch(name string) string {
+	out, err := exec.Command("apt-cache", "search", name).Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var keep []string
+	for _, l := range lines {
+		if len(keep) < 5 && l != "" {
+			keep = append(keep, l)
+		}
+	}
+	return strings.Join(keep, "\n")
+}
+
+// gatherContext builds rich context from local sources + web for agenticRecover.
+func gatherContext(failedCmd, stderrOutput, originalInput string) (searchQuery string, context string) {
+	cmdParts := strings.Fields(failedCmd)
+	cmdName := ""
+	if len(cmdParts) > 0 {
+		cmdName = cmdParts[0]
+	}
+
+	// Clean up the error line
+	errLine := stderrOutput
+	if idx := strings.Index(errLine, "\n"); idx > 0 {
+		errLine = errLine[:idx]
+	}
+	if strings.HasPrefix(errLine, "bash: line") {
+		if idx := strings.Index(errLine[11:], ":"); idx >= 0 {
+			errLine = strings.TrimSpace(errLine[11+idx+1:])
+		}
+	}
+	if len(errLine) > 120 {
+		errLine = errLine[:120]
+	}
+
+	sq := errLine
+	if !strings.HasPrefix(strings.ToLower(errLine), strings.ToLower(cmdName)) {
+		sq = cmdName + " " + errLine
+	}
+	sq += " fix linux bash"
+	searchQuery = sq
+
+	var parts []string
+
+	// 1. Man page for the failed command (tells AI what the command actually does)
+	if man := getManPageSummary(cmdName); man != "" {
+		parts = append(parts, "Man page for '"+cmdName+"':\n"+man)
+	}
+
+	// 2. Apt-cache search for the thing the user wanted (in case wrong tool was used)
+	// Extract the likely package name from the original input
+	userWords := strings.Fields(originalInput)
+	pkgGuess := ""
+	for _, w := range userWords {
+		if !strings.Contains("install download get setup add", strings.ToLower(w)) {
+			pkgGuess = strings.ToLower(w)
+			break
+		}
+	}
+	if pkgGuess != "" {
+		if aptOut := aptCacheSearch(pkgGuess); aptOut != "" {
+			parts = append(parts, "apt-cache search '"+pkgGuess+"':\n"+aptOut)
+		}
+	}
+
+	// 3. Stack Exchange (short title search) — best-effort
+	shortQ := cmdName + " " + errLine
+	if len(shortQ) > 80 {
+		shortQ = shortQ[:80]
+	}
+	seResults := searchStackExchange(shortQ)
+	if len(seResults) > 0 {
+		parts = append(parts, "Related Unix SE questions:\n"+strings.Join(seResults, "\n"))
+	}
+
+	// 4. Fallback: DuckDuckGo
+	if len(parts) < 2 {
+		ddg := searchDuckDuckGo(sq)
+		if len(ddg) > 0 {
+			parts = append(parts, "Web results:\n"+strings.Join(ddg, "\n"))
+		}
+	}
+
+	context = strings.Join(parts, "\n\n")
+	return
 }
 
 // callAI sends a single prompt to the configured AI and returns the full response,
@@ -1330,12 +1498,32 @@ func callAI(ctx context.Context, prompt, spinnerLabel string) string {
 	return strings.TrimSpace(result)
 }
 
-// cleanCommand strips markdown fences and UNSAFE prefix from an AI response.
-func cleanCommand(s string) (cmd string, isSafe bool) {
-	isSafe = true
-	if strings.Contains(s, "UNSAFE:") {
-		isSafe = false
+// isDangerousCommand returns true for commands that can cause irreversible
+// data loss or system damage. Package managers, sudo installs, etc. are safe.
+func isDangerousCommand(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	dangerous := []string{
+		"rm -rf /", "rm -rf ~", "rm -rf *",
+		"dd if=", "dd of=/dev/",
+		"mkfs", "> /dev/sd", "> /dev/nvme",
+		"fdisk /dev", "parted /dev",
+		"shred /dev", "wipefs",
+		":(){ :|:", // fork bomb
+		"chmod -r 000 /", "chmod 000 /",
+		"mv / /dev/null",
+		"format c:", // windows
 	}
+	for _, d := range dangerous {
+		if strings.Contains(lower, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanCommand strips markdown fences from an AI response and checks safety
+// using rule-based detection (not the LLM's own "UNSAFE:" label).
+func cleanCommand(s string) (cmd string, isSafe bool) {
 	if strings.Contains(s, "```") {
 		first := strings.Index(s, "```")
 		last := strings.LastIndex(s, "```")
@@ -1351,13 +1539,15 @@ func cleanCommand(s string) (cmd string, isSafe bool) {
 			s = block
 		}
 	}
+	// Strip any LLM-added UNSAFE prefix (we re-evaluate with our own rules)
 	s = strings.TrimPrefix(s, "UNSAFE: ")
 	s = strings.TrimPrefix(s, "UNSAFE:")
 	s = strings.TrimPrefix(s, "```bash\n")
 	s = strings.TrimPrefix(s, "```sh\n")
 	s = strings.TrimPrefix(s, "```")
 	s = strings.TrimSuffix(s, "```")
-	return strings.TrimSpace(s), isSafe
+	s = strings.TrimSpace(s)
+	return s, !isDangerousCommand(s)
 }
 
 // agenticRecover is called when an AI-generated command fails. It searches the
@@ -1374,49 +1564,19 @@ func agenticRecover(ctx context.Context, originalInput, failedCmd, stderrOutput 
 		attempted = attempt
 		fmt.Printf("\n%s🤔 Analyzing failure [%d/%d]...%s\n", colorPurple, attempt, maxRetries, colorReset)
 
-		// Build search query: avoid duplicating the command name when the
-		// stderr already starts with it (e.g. "print: command not found")
-		errLine := stderrOutput
-		if idx := strings.Index(errLine, "\n"); idx > 0 {
-			errLine = errLine[:idx]
+		fmt.Printf("%s🔍 Gathering context...%s\n", colorCyan, colorReset)
+		_, ctxInfo := gatherContext(failedCmd, stderrOutput, originalInput)
+		if ctxInfo == "" {
+			fmt.Printf("%s  (reasoning from error only)%s\n", colorGrey, colorReset)
 		}
-		if len(errLine) > 120 {
-			errLine = errLine[:120]
-		}
-		cmdParts := strings.Fields(failedCmd)
-		cmdName := ""
-		if len(cmdParts) > 0 {
-			cmdName = cmdParts[0]
-		}
-		// Strip bash wrapper (e.g. "bash: line 1: foo: ...") down to the real error
-		cleanErr := errLine
-		if strings.HasPrefix(cleanErr, "bash: line") {
-			if idx := strings.Index(cleanErr[11:], ":"); idx >= 0 {
-				cleanErr = strings.TrimSpace(cleanErr[11+idx+1:])
-			}
-		}
-		// Prepend command name if the error doesn't already start with it
-		searchQuery := cleanErr
-		if !strings.HasPrefix(strings.ToLower(cleanErr), strings.ToLower(cmdName)) {
-			searchQuery = cmdName + " " + cleanErr
-		}
-		searchQuery += " fix linux bash"
 
-		fmt.Printf("%s🔍 Searching: %s%s\n", colorCyan, searchQuery, colorReset)
-		snippets := searchDuckDuckGo(searchQuery)
-
-		webContext := ""
-		if len(snippets) > 0 {
-			webContext = "\n\nRelevant web results:\n"
-			for i, s := range snippets {
-				webContext += fmt.Sprintf("  [%d] %s\n", i+1, s)
-			}
-		} else {
-			fmt.Printf("%s  (no web results — reasoning from context only)%s\n", colorGrey, colorReset)
+		contextBlock := ""
+		if ctxInfo != "" {
+			contextBlock = "\n\nContext:\n" + ctxInfo
 		}
 
 		cwd, _ := os.Getwd()
-		prompt := fmt.Sprintf(`You are an expert shell debugger for %s.
+		prompt := fmt.Sprintf(`You are an expert shell fixer for %s.
 
 The user wanted to: %s
 Failed command:     %s
@@ -1424,12 +1584,8 @@ Error output:       %s
 Working directory:  %s
 %s
 
-Think step by step:
-1. What went wrong?
-2. What is the correct fix?
-
-Return ONLY the corrected shell command as the very last line. No explanation, no markdown.
-If destructive, prefix that line with "UNSAFE: ".`, targetOS, originalInput, failedCmd, stderrOutput, cwd, webContext)
+Your ONLY job: return the single shell command that will accomplish what the user wanted.
+Output the command on the very last line. No explanation, no markdown, no prefix.`, targetOS, originalInput, failedCmd, stderrOutput, cwd, contextBlock)
 
 		raw := callAI(ctx, prompt, "Thinking...")
 		if raw == "" {
@@ -1437,12 +1593,19 @@ If destructive, prefix that line with "UNSAFE: ".`, targetOS, originalInput, fai
 			break
 		}
 
-		// Extract the last non-empty, non-comment line as the command
-		lines := strings.Split(raw, "\n")
-		cmdLine := ""
-		for i := len(lines) - 1; i >= 0; i-- {
-			l := strings.TrimSpace(lines[i])
-			if l != "" && !strings.HasPrefix(l, "#") {
+		// Extract the command: prefer a code block, else the last non-trivial line.
+		var cmdLine string
+		if strings.Contains(raw, "```") {
+			// Let cleanCommand pull the command out of the code block
+			cmdLine = raw
+		} else {
+			rawLines := strings.Split(raw, "\n")
+			for i := len(rawLines) - 1; i >= 0; i-- {
+				l := strings.TrimSpace(rawLines[i])
+				// Skip fence markers, empty lines, comments
+				if l == "" || strings.HasPrefix(l, "#") || l == "```" || strings.HasPrefix(l, "```") {
+					continue
+				}
 				cmdLine = l
 				break
 			}
@@ -1450,32 +1613,24 @@ If destructive, prefix that line with "UNSAFE: ".`, targetOS, originalInput, fai
 		fixedCmd, safe := cleanCommand(cmdLine)
 
 		if fixedCmd == "" || fixedCmd == failedCmd {
-			fmt.Printf("%s✗ No better command found.%s\n", colorRed, colorReset)
-			// Widen the search on the next attempt using the original user intent
-			searchQuery = originalInput + " linux bash command"
-			snippets = searchDuckDuckGo(searchQuery)
-			if len(snippets) > 0 {
-				webContext = "\n\nWider search results:\n"
-				for i, s := range snippets {
-					webContext += fmt.Sprintf("  [%d] %s\n", i+1, s)
-				}
-			}
+			fmt.Printf("%s✗ No better command found, retrying with broader context...%s\n", colorRed, colorReset)
+			// On next attempt gatherContext will use the original input for a broader search
 			continue
 		}
 
-		safeLabel := ""
 		if !safe {
-			safeLabel = fmt.Sprintf(" %s[UNSAFE]%s", colorGreen, colorReset)
+			fmt.Printf("%s💡 Fix: %s %s[UNSAFE — requires confirmation]%s\n", colorGreen, fixedCmd, colorRed, colorReset)
+		} else {
+			fmt.Printf("%s💡 Fix: %s%s\n", colorGreen, fixedCmd, colorReset)
 		}
-		fmt.Printf("%s💡 Fix: %s%s\n", colorGreen, fixedCmd+safeLabel, colorReset)
 
-		// Confirm if needed
+		// Only ask for confirmation if dangerous or AutoExecute is off
 		if !config.AutoExecute || !safe {
 			fmt.Printf("%sApply fix? (y/n): %s", colorYellow, colorReset)
 			line, err := rl.ReadlineWithDefault("")
 			if err != nil || strings.ToLower(strings.TrimSpace(line)) != "y" {
 				fmt.Println("Recovery cancelled.")
-				fmt.Println() // ensure readline gets a clean line
+				fmt.Println()
 				return
 			}
 		}
@@ -1483,12 +1638,12 @@ If destructive, prefix that line with "UNSAFE: ".`, targetOS, originalInput, fai
 		// Run the fix
 		runErr, newStderr := runCaptureStderr(fixedCmd, false)
 		if runErr == nil {
-			fmt.Printf("%s✓ Fixed!\n%s", colorGreen, colorReset)
-			fmt.Println() // clean line for readline
+			fmt.Printf("%s✓ Fixed!%s\n", colorGreen, colorReset)
+			fmt.Println()
 			return
 		}
 
-		// Still failing — loop with updated context
+		// Still failing — update context and loop
 		fmt.Printf("%s✗ Fix also failed. Retrying...%s\n", colorRed, colorReset)
 		failedCmd = fixedCmd
 		stderrOutput = newStderr
