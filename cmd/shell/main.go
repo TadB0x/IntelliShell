@@ -34,6 +34,7 @@ type AppConfig struct {
 	Provider               string
 	Model                  string
 	APIKey                 string
+	APIKeys                map[string]string `json:"api_keys"` // per-provider key store
 	ProxyURL               string
 	AutoExecute            bool
 	AIMemory               string
@@ -66,6 +67,7 @@ type HistoryEntry struct {
 var sessionHistory []HistoryEntry
 const maxHistorySize = 5
 var sessionAIMemory string
+var autoStartedOllamaPID int // PID of Ollama process we started; 0 if we didn't start it
 
 var (
 	config   = AppConfig{
@@ -174,6 +176,7 @@ func main() {
 		return
 	}
 	defer rl.Close()
+	defer stopAutoStartedOllama()
 
 	fmt.Println("Welcome to IntelliShell. Type natural language, native commands, '/setup', '/model', or 'exit' to quit.")
 
@@ -605,19 +608,14 @@ func handleModelConfig(ctx context.Context) {
 	}
 
 	p := config.Provider
-	k := config.APIKey
 
-	// Step 1: Provider and Key Selection
+	// Step 1: Provider selection only (separate from key so we can show the right key)
 	err := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("AI Provider").
 				Options(providerOptions...).
 				Value(&p),
-			huh.NewInput().
-				Title("API Key (leave blank for local providers)").
-				EchoMode(huh.EchoModePassword).
-				Value(&k),
 		),
 	).Run()
 
@@ -626,8 +624,33 @@ func handleModelConfig(ctx context.Context) {
 		return
 	}
 
+	// Load the stored key for this provider (empty if never set for this provider)
+	localProviders := map[string]bool{"ollama": true, "lmstudio": true}
+	k := ""
+	if !localProviders[p] {
+		if config.APIKeys != nil {
+			k = config.APIKeys[p]
+		}
+	}
+
+	// Step 2: API Key (pre-filled only if we have one stored for this specific provider)
+	if !localProviders[p] {
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title(fmt.Sprintf("API Key for %s (blank to keep existing)", p)).
+					EchoMode(huh.EchoModePassword).
+					Value(&k),
+			),
+		).Run()
+		if err != nil {
+			fmt.Printf("\n%sConfiguration cancelled:%s %v\n", colorRed, colorReset, err)
+			return
+		}
+	}
+
 	fmt.Printf("\n%sFetching latest models for selected provider...%s\n", colorCyan, colorReset)
-	
+
 	// Try fetching directly from provider first, then fallback to registry (OpenRouter)
 	fetchedModels := fetchModelsForProvider(p, k)
 	if len(fetchedModels) == 0 {
@@ -682,7 +705,16 @@ func handleModelConfig(ctx context.Context) {
 		}
 	}
 
-	config.Provider, config.Model, config.APIKey = p, m, k
+	config.Provider = p
+	config.Model = m
+	config.APIKey = k // keep for backwards compat / current-session use
+	// Persist key under its provider so switching away and back restores it
+	if k != "" {
+		if config.APIKeys == nil {
+			config.APIKeys = make(map[string]string)
+		}
+		config.APIKeys[p] = k
+	}
 	saveConfig()
 
 	fmt.Printf("\n%sSuccessfully updated AI configuration to %s (%s).%s\n", colorGreen, config.Provider, config.Model, colorReset)
@@ -1131,6 +1163,7 @@ func isOllamaRunning() bool {
 }
 
 // tryAutoStartOllama attempts to start the Ollama daemon in the background.
+// Records the PID in autoStartedOllamaPID so it can be killed on exit.
 func tryAutoStartOllama() bool {
 	if _, err := exec.LookPath("ollama"); err != nil {
 		return false
@@ -1141,13 +1174,28 @@ func tryAutoStartOllama() bool {
 	if err := cmd.Start(); err != nil {
 		return false
 	}
+	autoStartedOllamaPID = cmd.Process.Pid
 	for i := 0; i < 10; i++ {
 		time.Sleep(500 * time.Millisecond)
 		if isOllamaRunning() {
 			return true
 		}
 	}
+	autoStartedOllamaPID = 0
 	return false
+}
+
+// stopAutoStartedOllama kills the Ollama process we started, if any.
+func stopAutoStartedOllama() {
+	if autoStartedOllamaPID == 0 {
+		return
+	}
+	p, err := os.FindProcess(autoStartedOllamaPID)
+	if err == nil {
+		_ = p.Kill()
+		fmt.Printf("%s✓ Stopped Ollama (auto-started)%s\n", colorGreen, colorReset)
+	}
+	autoStartedOllamaPID = 0
 }
 
 // detectLocalLLM checks for a running local provider and returns (provider, firstModel).
@@ -1199,6 +1247,13 @@ func loadConfig() {
 		return
 	}
 	_ = json.Unmarshal(data, &config)
+
+	// If we have a per-provider key stored but the top-level APIKey is stale/empty, sync it
+	if config.APIKeys != nil {
+		if stored, ok := config.APIKeys[config.Provider]; ok && config.APIKey == "" {
+			config.APIKey = stored
+		}
+	}
 
 	// Auto-start Ollama if configured and not already running
 	if config.Provider == "ollama" && config.AutoStartOllama && !isOllamaRunning() {
