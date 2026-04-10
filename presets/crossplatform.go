@@ -44,6 +44,62 @@ func init() {
 				"darwin":  "rm -rf $1",
 			},
 		},
+		{
+			// Create a directory
+			Patterns: []*regexp.Regexp{
+				regexp.MustCompile(`(?i)^(?:mkdir|md)\s+(.+)$`),
+			},
+			Translations: map[string]string{
+				"windows": "mkdir $1",
+				"linux":   "mkdir -p $1",
+				"darwin":  "mkdir -p $1",
+			},
+		},
+		{
+			// Copy a file
+			Patterns: []*regexp.Regexp{
+				regexp.MustCompile(`(?i)^(?:cp|copy)\s+([^\s]+)\s+([^\s]+)$`),
+			},
+			Translations: map[string]string{
+				"windows": "copy $1 $2",
+				"linux":   "cp $1 $2",
+				"darwin":  "cp $1 $2",
+			},
+		},
+		{
+			// Move or rename a file
+			Patterns: []*regexp.Regexp{
+				regexp.MustCompile(`(?i)^(?:mv|move|ren)\s+([^\s]+)\s+([^\s]+)$`),
+			},
+			Translations: map[string]string{
+				"windows": "move $1 $2",
+				"linux":   "mv $1 $2",
+				"darwin":  "mv $1 $2",
+			},
+		},
+		{
+			// Display file content
+			Patterns: []*regexp.Regexp{
+				regexp.MustCompile(`(?i)^(?:cat|type)\s+(.+)$`),
+			},
+			Translations: map[string]string{
+				"windows": "type $1",
+				"linux":   "cat $1",
+				"darwin":  "cat $1",
+			},
+		},
+		{
+			// Show network interface configuration
+			Patterns: []*regexp.Regexp{
+				regexp.MustCompile(`(?i)^ipconfig$`),
+				regexp.MustCompile(`(?i)^ifconfig$`),
+			},
+			Translations: map[string]string{
+				"windows": "ipconfig",
+				"linux":   "ip addr", // `ifconfig` is often deprecated in favor of `ip`
+				"darwin":  "ifconfig",
+			},
+		},
 	}
 }
 

@@ -866,6 +866,7 @@ func isNativeCommand(input string) bool {
 	}
 
 	cmd := parts[0]
+	cmdLower := strings.ToLower(cmd)
 
 	// 1. Built-in shell commands
 	builtins := map[string]bool{
@@ -873,8 +874,9 @@ func isNativeCommand(input string) bool {
 		"dir": true, "type": true, "del": true, "copy": true, "move": true,
 		"ren": true, "md": true, "rd": true, "history": true, "alias": true,
 		"export": true, "set": true, "source": true, "pwd": true, "pushd": true, "popd": true,
+		"jobs": true, "fg": true, "bg": true, "kill": true, "unset": true,
 	}
-	if builtins[strings.ToLower(cmd)] {
+	if builtins[cmdLower] {
 		return true
 	}
 
@@ -900,7 +902,7 @@ func isNativeCommand(input string) bool {
 			"tar": true, "unzip": true, "curl": true, "wget": true,
 			"ssh": true, "scp": true, "rsync": true, "ping": true,
 			"netstat": true, "ifconfig": true, "ip": true, "top": true,
-			"htop": true, "ps": true, "kill": true, "df": true, "du": true,
+			"htop": true, "ps": true, "df": true, "du": true,
 			"free": true, "chmod": true, "chown": true, "rm": true,
 			"mkdir": true, "touch": true, "mv": true, "cp": true,
 			"sudo": true, "su": true, "bash": true, "sh": true, "zsh": true,
@@ -909,19 +911,29 @@ func isNativeCommand(input string) bool {
 			"java": true, "javac": true, "rustc": true, "ruby": true,
 			"perl": true, "lua": true,
 		}
-		if subcommands[strings.ToLower(cmd)] {
+		if subcommands[cmdLower] {
 			return true
 		}
 
-		// Check if subsequent arguments look like explicit flags or paths
+		// 4. Strong indicators of a native shell pipeline/redirection
+		if strings.Contains(input, " |") || strings.Contains(input, " >") ||
+			strings.Contains(input, " <") || strings.Contains(input, " &&") ||
+			strings.Contains(input, " ||") || strings.Contains(input, " ;") {
+			return true
+		}
+
+		// 5. Check if subsequent arguments look like explicit flags, paths, or assignments
 		for _, arg := range parts[1:] {
-			if strings.HasPrefix(arg, "-") && len(arg) > 1 {
+			if (strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--")) && len(arg) > 1 {
 				return true
 			}
 			if strings.HasPrefix(arg, "/") && len(arg) > 1 {
 				return true
 			}
-			if strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, ".\\") {
+			if strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, ".\\") || strings.HasPrefix(arg, "../") || strings.HasPrefix(arg, "..\\") {
+				return true
+			}
+			if strings.Contains(arg, "=") {
 				return true
 			}
 		}
