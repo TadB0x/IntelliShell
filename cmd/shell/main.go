@@ -23,6 +23,13 @@ import (
 	"github.com/charmbracelet/huh"
 )
 
+type FavoriteModel struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	APIKey   string `json:"api_key"`
+}
+
 type AppConfig struct {
 	Provider    string
 	Model       string
@@ -33,6 +40,7 @@ type AppConfig struct {
 	EnableHistory          bool
 	EnableSessionMemory    bool
 	EnablePersistentMemory bool
+	Favorites              []FavoriteModel `json:"favorites"`
 }
 
 // AIRegistry represents a dynamic list of providers and models
@@ -97,7 +105,7 @@ func (p *commandPainter) Paint(line []rune, pos int) []rune {
 		return line
 	}
 
-	cmds := []string{"/setup", "/settings", "/version", "/help"}
+	cmds := []string{"/setup", "/settings", "/model", "/version", "/help"}
 	var matches []string
 	for _, cmd := range cmds {
 		if strings.HasPrefix(cmd, s) {
@@ -145,6 +153,7 @@ func main() {
 	completer := readline.NewPrefixCompleter(
 		readline.PcItem("/setup"),
 		readline.PcItem("/settings"),
+		readline.PcItem("/model"),
 		readline.PcItem("/version"),
 		readline.PcItem("/help"),
 		readline.PcItem("exit"),
@@ -163,7 +172,7 @@ func main() {
 	}
 	defer rl.Close()
 
-	fmt.Println("Welcome to IntelliShell. Type natural language, native commands, '/setup' (or '/settings') for configuration, or 'exit' to quit.")
+	fmt.Println("Welcome to IntelliShell. Type natural language, native commands, '/setup', '/model', or 'exit' to quit.")
 
 	for {
 		cwd, _ := os.Getwd()
@@ -181,6 +190,12 @@ func main() {
 
 		if strings.ToLower(input) == "exit" {
 			break
+		}
+
+		// Handle the model switch command
+		if strings.HasPrefix(input, "/model") {
+			handleModelSwitch()
+			continue
 		}
 
 		// Handle the setup menu
@@ -202,6 +217,7 @@ func main() {
 			fmt.Printf("  %s<natural language>%s : Describe your task (e.g., 'find large files', 'undo last commit')\n", colorYellow, colorReset)
 			fmt.Printf("  %s<native command>%s   : Run standard terminal commands (e.g., 'ls', 'cd', 'git status')\n", colorYellow, colorReset)
 			fmt.Printf("  %s/setup%s (or %s/settings%s) : Configure AI providers, models, and execution preferences\n", colorGreen, colorReset, colorGreen, colorReset)
+			fmt.Printf("  %s/model%s             : Quick switch between favorite models\n", colorGreen, colorReset)
 			fmt.Printf("  %s/version%s           : Display the current version of IntelliShell\n", colorGreen, colorReset)
 			fmt.Printf("  %s/help%s              : Show this help menu\n", colorGreen, colorReset)
 			fmt.Printf("  %sexit%s               : Quit the application\n\n", colorRed, colorReset)
@@ -653,6 +669,92 @@ func handleModelConfig(ctx context.Context) {
 	saveConfig()
 
 	fmt.Printf("\n%sSuccessfully updated AI configuration to %s (%s).%s\n", colorGreen, config.Provider, config.Model, colorReset)
+}
+
+func handleModelSwitch() {
+	var options []huh.Option[string]
+	for i, f := range config.Favorites {
+		label := fmt.Sprintf("Switch to %s (%s - %s)", f.Name, f.Provider, f.Model)
+		options = append(options, huh.NewOption(label, fmt.Sprintf("switch_%d", i)))
+	}
+	options = append(options, huh.NewOption("⭐ Save current config as favorite", "add"))
+	if len(config.Favorites) > 0 {
+		options = append(options, huh.NewOption("🗑️  Remove a favorite", "remove"))
+	}
+	options = append(options, huh.NewOption("Cancel", "cancel"))
+
+	var choice string
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelectstring.
+				Title("Favorite Models").
+				Options(options...).
+				Value(&choice),
+		),
+	).Run()
+
+	if err != nil || choice == "cancel" {
+		return
+	}
+
+	if strings.HasPrefix(choice, "switch_") {
+		var idx int
+		fmt.Sscanf(choice, "switch_%d", &idx)
+		if idx >= 0 && idx < len(config.Favorites) {
+			fav := config.Favorites[idx]
+			config.Provider = fav.Provider
+			config.Model = fav.Model
+			config.APIKey = fav.APIKey
+			saveConfig()
+			fmt.Printf("\n%sSwitched to favorite: %s%s\n", colorGreen, fav.Name, colorReset)
+		}
+	} else if choice == "add" {
+		var name string
+		err := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Name for this favorite").
+					Value(&name),
+			),
+		).Run()
+		if err == nil && name != "" {
+			config.Favorites = append(config.Favorites, FavoriteModel{
+				Name:     name,
+				Provider: config.Provider,
+				Model:    config.Model,
+				APIKey:   config.APIKey,
+			})
+			saveConfig()
+			fmt.Printf("\n%sAdded '%s' to favorites.%s\n", colorGreen, name, colorReset)
+		}
+	} else if choice == "remove" {
+		var rmOptions []huh.Option[string]
+		for i, f := range config.Favorites {
+			rmOptions = append(rmOptions, huh.NewOption(f.Name, fmt.Sprintf("%d", i)))
+		}
+		rmOptions = append(rmOptions, huh.NewOption("Cancel", "cancel"))
+
+		var rmChoice string
+		err := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelectstring.
+					Title("Select favorite to remove").
+					Options(rmOptions...).
+					Value(&rmChoice),
+			),
+		).Run()
+
+		if err == nil && rmChoice != "cancel" {
+			var idx int
+			fmt.Sscanf(rmChoice, "%d", &idx)
+			if idx >= 0 && idx < len(config.Favorites) {
+				removed := config.Favorites[idx].Name
+				config.Favorites = append(config.Favorites[:idx], config.Favorites[idx+1:]...)
+				saveConfig()
+				fmt.Printf("\n%sRemoved '%s' from favorites.%s\n", colorYellow, removed, colorReset)
+			}
+		}
+	}
 }
 
 func contains(slice []string, item string) bool {
