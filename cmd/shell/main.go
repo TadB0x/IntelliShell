@@ -38,6 +38,7 @@ type AppConfig struct {
 	APIKeys                map[string]string `json:"api_keys"` // per-provider key store
 	ProxyURL               string
 	AutoExecute            bool
+	DisableSandbox         bool // bypass seccomp; harmful commands still blocked by isDangerousCommand
 	AIMemory               string
 	EnableHistory          bool
 	EnableSessionMemory    bool
@@ -281,6 +282,13 @@ func main() {
 		command, isSafe := generateCommandFromAI(ctx, input, done)
 
 		// 2. Safety Verification
+		// When sandbox is disabled, use rule-based check as the only gate.
+		// isDangerousCommand overrides isSafe for genuinely harmful commands.
+		if config.DisableSandbox && isDangerousCommand(command) {
+			fmt.Printf("%s🚫 Blocked: command matched harmful pattern. Not executing.%s\n", colorRed, colorReset)
+			continue
+		}
+
 		needsExplicitConfirm := !isSafe || !config.AutoExecute
 		if needsExplicitConfirm {
 			msg := "Command might be unsafe."
@@ -291,8 +299,7 @@ func main() {
 			}
 
 			fmt.Printf("%s%s Execute? (y/n):%s ", colorYellow, msg, colorReset)
-			
-			// We need a clean read here, bypassing readline temporary to avoid prompt collision
+
 			confirmLine, err := rl.ReadlineWithDefault("")
 			if err != nil {
 				continue
@@ -392,6 +399,10 @@ func handleSetup() {
 			if config.AutoStartOllama {
 				ollamaToggleLabel = "Disable Auto-Start Ollama"
 			}
+			sandboxLabel := "Allow All Commands (disable sandbox, blacklist harmful only)"
+			if config.DisableSandbox {
+				sandboxLabel = "Re-enable Sandbox (currently: allow-all mode)"
+			}
 
 			err := huh.NewForm(
 				huh.NewGroup(
@@ -399,6 +410,7 @@ func handleSetup() {
 						Title("Execution Settings").
 						Options(
 							huh.NewOption(toggleLabel, "toggle"),
+							huh.NewOption(sandboxLabel, "toggle_sandbox"),
 							huh.NewOption(ollamaToggleLabel, "toggle_ollama"),
 							huh.NewOption("Back", "back"),
 						).
@@ -414,6 +426,15 @@ func handleSetup() {
 					status = "ON"
 				}
 				fmt.Printf("\n%sAuto-execution is now %s.%s\n", colorGreen, status, colorReset)
+				time.Sleep(1 * time.Second)
+			} else if err == nil && execAction == "toggle_sandbox" {
+				config.DisableSandbox = !config.DisableSandbox
+				saveConfig()
+				if config.DisableSandbox {
+					fmt.Printf("\n%s⚡ Sandbox disabled — all commands run directly. Harmful patterns are still blocked.%s\n", colorYellow, colorReset)
+				} else {
+					fmt.Printf("\n%s🛡️  Sandbox re-enabled.%s\n", colorGreen, colorReset)
+				}
 				time.Sleep(1 * time.Second)
 			} else if err == nil && execAction == "toggle_ollama" {
 				config.AutoStartOllama = !config.AutoStartOllama
@@ -1102,7 +1123,7 @@ func executeCommand(cmdStr string, forceUnsandboxed bool, rl *readline.Instance)
 
 	var cmd *exec.Cmd
 	useSandbox := false
-	if !forceUnsandboxed && isSandboxSupported() {
+	if !forceUnsandboxed && !config.DisableSandbox && isSandboxSupported() {
 		useSandbox = true
 	}
 
