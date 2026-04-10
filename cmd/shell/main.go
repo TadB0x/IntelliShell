@@ -61,7 +61,7 @@ var (
 		APIKey:                 os.Getenv("GEMINI_API_KEY"),
 		EnableHistory:          true,
 		EnableSessionMemory:    true,
-		EnablePersistentMemory: true,
+		EnablePersistentMemory: false, // Balanced setting: persistent memory off by default
 	}
 
 	colorCyan   = "\033[36m"
@@ -95,7 +95,7 @@ func (p *commandPainter) Paint(line []rune, pos int) []rune {
 		return line
 	}
 
-	cmds := []string{"/setup", "/version", "/help"}
+	cmds := []string{"/setup", "/settings", "/version", "/help"}
 	var matches []string
 	for _, cmd := range cmds {
 		if strings.HasPrefix(cmd, s) {
@@ -142,6 +142,7 @@ func main() {
 	// Configure autocomplete for / commands
 	completer := readline.NewPrefixCompleter(
 		readline.PcItem("/setup"),
+		readline.PcItem("/settings"),
 		readline.PcItem("/version"),
 		readline.PcItem("/help"),
 		readline.PcItem("exit"),
@@ -160,7 +161,7 @@ func main() {
 	}
 	defer rl.Close()
 
-	fmt.Println("Welcome to IntelliShell. Type natural language, native commands, '/setup' for configuration and preferences, or 'exit' to quit.")
+	fmt.Println("Welcome to IntelliShell. Type natural language, native commands, '/setup' (or '/settings') for configuration, or 'exit' to quit.")
 
 	for {
 		cwd, _ := os.Getwd()
@@ -181,7 +182,7 @@ func main() {
 		}
 
 		// Handle the setup menu
-		if strings.HasPrefix(input, "/setup") {
+		if strings.HasPrefix(input, "/setup") || strings.HasPrefix(input, "/settings") {
 			handleSetup()
 			continue
 		}
@@ -198,7 +199,7 @@ func main() {
 			fmt.Printf("%s======================%s\n", colorGrey, colorReset)
 			fmt.Printf("  %s<natural language>%s : Describe your task (e.g., 'find large files', 'undo last commit')\n", colorYellow, colorReset)
 			fmt.Printf("  %s<native command>%s   : Run standard terminal commands (e.g., 'ls', 'cd', 'git status')\n", colorYellow, colorReset)
-			fmt.Printf("  %s/setup%s             : Configure AI providers, models, and execution preferences\n", colorGreen, colorReset)
+			fmt.Printf("  %s/setup%s (or %s/settings%s) : Configure AI providers, models, and execution preferences\n", colorGreen, colorReset, colorGreen, colorReset)
 			fmt.Printf("  %s/version%s           : Display the current version of IntelliShell\n", colorGreen, colorReset)
 			fmt.Printf("  %s/help%s              : Show this help menu\n", colorGreen, colorReset)
 			fmt.Printf("  %sexit%s               : Quit the application\n\n", colorRed, colorReset)
